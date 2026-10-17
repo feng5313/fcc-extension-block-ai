@@ -821,6 +821,21 @@ if _G.__BLOCKAI_GEN == gen then
   try("rpc", function()
     fcc.rpc_register("block-ai", rpcHandler)
   end)
+  -- 安装期预编译协作(#2235): 宿主gen进程(--gen-shader-cache, 安装器/build.bat
+  -- 调用)在lua boot完成后广播'shader_precompile'(运行期无人发射=本订阅静默)。
+  -- 激活型扩展的注入只在交互时提交 → 安装缓存从未包含 → 首次激活现场冷编
+  -- 粒子组注入版(实测8个shader, 用户报告#10501)。此处提交激活期注入:
+  -- 注册类型/纹理/mesh(ensureType幂等)后setShaderInjects — 不启动游戏逻辑;
+  -- gen收敛泵等注入代数静默后编译入缓存, 首次激活零编译。
+  try("precompile", function()
+    fcc.events.on("shader_precompile", function()
+      if _G.__BLOCKAI_GEN ~= gen then return end   -- 热重载旧代际不自投
+      local ok, err = pcall(Board.ensureType)
+      if not ok then
+        print("[block-ai] precompile: " .. tostring(err))
+      end
+    end)
+  end)
   -- 热重载代际交接(风主#2077): 继承的活跃会话重订阅输入/事件
   -- (旧代订阅已自杀; 游戏局/设置经S表继承无缝继续)
   if S.active and S.game then

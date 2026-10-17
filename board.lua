@@ -640,13 +640,18 @@ if(type == 17u){
      && tiC >= TET_SLOT0 && tiC <= FX_SLOT0 + 4){
     float fxM = p.extra2.x;
     if(p.extra3.y < 0.5 && fxM >= 1.0){
+      // cellPx改运行期取extra2.y(spawn时lua写入) — 注入内容不再内嵌
+      // 几何值 → 缩放/换窗/换图零重编译, gen可预编译(#2235); 旧数据
+      // (<1)兜底56=典型全屏cell
+      float cpz = p.extra2.y;
+      if(cpz < 1.0) cpz = 56.0;
       windFactor = 0.0; turbFactor = 0.0;
-      if(fxM < 2.5){       gravity = 9.0 * cellPx; drag = 0.010; }
-      else if(fxM < 3.5){  gravity = 24.0 * cellPx; drag = 0.004; }
+      if(fxM < 2.5){       gravity = 9.0 * cpz; drag = 0.010; }
+      else if(fxM < 3.5){  gravity = 24.0 * cpz; drag = 0.004; }
       else if(fxM < 4.5){  gravity = 0.0;  drag = 0.0; }
       else if(fxM < 5.5){  gravity = 0.0;  drag = 0.0; }
-      else if(fxM < 6.5){  gravity = -2.6 * cellPx; drag = 0.012; }
-      else {               gravity = -3.5 * cellPx; drag = 0.014; }
+      else if(fxM < 6.5){  gravity = -2.6 * cpz; drag = 0.012; }
+      else {               gravity = -3.5 * cpz; drag = 0.014; }
     }
   }
 }]]
@@ -657,11 +662,10 @@ function Board.setShaderInjects(retry)
   local base = slots[0]
   local fbase = fslots[0]
   if not base or not fbase then return end
-  local cell = (Board.visGeo and Board.visGeo.cell) or 54
   -- 重试标记: cpp侧setLuaInject对相同内容幂等(不gen++不重建) — 编译
   -- 失败后同内容重提交=零动作, 注入永不重试(平面方块永久服役根因)。
   -- 自愈路径追加HLSL注释改变内容 → 强制走重建管线重编译。
-  local mark = "\n// blockai mat v36 (hover终版: 只绕中心旋转5Hz±8°, 零位移) \n"
+  local mark = "\n// blockai mat v37 (cellPx运行期extra2.y: 缩放/换窗零重编译, #2235) \n"
   if retry and retry > 0 then
     mark = mark .. "\n// blockai inject retry " .. retry .. "\n"
   end
@@ -686,15 +690,12 @@ function Board.setShaderInjects(retry)
   end
   local r3 = rpc("shader", "set_inject",
       { hook = "cs_mesh_physics",
-        -- cellPx量化到4px步进: RT/imgRect轻微抖动不改变注入内容
-        -- (内容变化=gen++=全粒子组重编译, 多秒旧程序服役窗口=闪烁/变
-        -- 角度根因; 4px内重力差异不可感知)
+        -- (#2235) cellPx不再文本内嵌(运行期读extra2.y, 见CS_INJECT) —
+        -- 注入内容零几何依赖: 缩放/换窗/换图/gen预热全同键
         code = ((CS_INJECT:gsub("TET_SLOT0", tostring(base))
                           :gsub("FX_SLOT0", tostring(fbase))
                           :gsub("TET_TYPE", tyId)
-                          :gsub("FX_TYPE", ftyId)
-                           :gsub("cellPx", string.format("%.2f",
-                                    math.floor(cell / 4 + 0.5) * 4))) .. mark),
+                          :gsub("FX_TYPE", ftyId)) .. mark),
         id = "blockai_cs" })
   if not (r3 and r3.ok ~= false) then
     print("[block-ai] CS注入失败: " .. tostring(r3 and r3.error or r3))
@@ -1137,7 +1138,9 @@ function Board.flushFx()
       items[k + 12] = CELL_TAG + it.col + it.row * 256  -- per位置tag→稳定种子
       items[k + 13] = 0; items[k + 14] = it.hue
       items[k + 15] = it.light; items[k + 16] = -1
-      items[k + 17] = it.fxM; items[k + 18] = 0
+      items[k + 17] = it.fxM; items[k + 18] = g.cell
+      -- items[18]=extra2.y=cellPx(#2235): CS注入运行期读取 — fx重力随
+      -- 实际板几何, 注入内容零几何依赖(缩放/换窗零重编译)
       items[k + 19] = 0; items[k + 20] = 0
       k = k + 20
     end
