@@ -134,6 +134,12 @@ if S.requestRenderMode == nil then S.requestRenderMode = nil end
 S.tickSub = nil; S.renderSub = nil
 S.mouseSub = nil         -- 鼠标订阅(点击消除方块)
 S.hoverSub = nil         -- 悬停订阅(风主#9624: 鼠标处方块颤动)
+-- #10830拖擦状态机: LMB按下期间鼠标经过的方块全部消除 —
+-- down置位(棋盘内=mouseHandler独占订阅, 棋盘外=hoverHandler兜底订阅),
+-- up清零(两订阅都收up, 宿主up事件不按rect过滤必达), move逐格消除。
+S.erasing = false
+S.lastErCol, S.lastErRow = -1, -1   -- 去重: 同格move不重复消
+S.capRect = nil                     -- 已同步宿主的capture矩形缓存(syncCapRect)
 if S.auto == nil then S.auto = nil end          -- autopilot {steps, t}
 if S.pendingStart == nil then S.pendingStart = false end
 if S.shaderPending == nil then S.shaderPending = false end   -- 2D兜底中(#2077)
@@ -210,10 +216,14 @@ local function gameTick(inp)
 end
 
 local tryUpgrade3D   -- 前向声明(定义于生命周期段, tickHandler先引用)
+local syncCapRect    -- 前向声明(#10830: 定义于鼠标订阅段, tickHandler先引用)
 
 local function tickHandler(t)
   if _G.__BLOCKAI_GEN ~= gen then return end
   S.now = t
+  -- #10830: 棋盘矩形跟随图片(平移/缩放/换图移动锚定矩形) — 每tick比对
+  -- 同步(pendingStart等待期订阅已激活, rect也须尽早修正到真实棋盘)
+  syncCapRect()
   -- 延迟启动(等网格/粒子系统就绪; 0.5s节流+每tick只探一步 —
   -- boot期粒子RPC可能长超时, 60Hz重试锤爆worker=整机lua假死数分钟)
   if S.pendingStart then
@@ -500,13 +510,23 @@ local function clickCell(col, row)
            score = g.score, lines = g.lines }
 end
 
--- 鼠标左键: 屏幕坐标→棋盘格→clickCell(不capture不拦截宿主)
+-- 鼠标左键: 屏幕坐标→棋盘格→clickCell
 -- col/row命中用cellX/cellY(RT量化纵横比修正, hud.boardRect同源) —
 -- 水平cellX≠垂直cellY时各向同性假设会让边缘列点击错位近一格
+-- #10830拖擦: 独占订阅(棋盘矩形内capture)收down+up(button 0) —
+-- down消格+置拖擦态, up清拖擦态(宿主up不按rect过滤, 任何位置必达);
+-- 拖动经过的格子由hoverHandler(move)逐格消除。
 local function mouseHandler(kind, x, y, button)
   if _G.__BLOCKAI_GEN ~= gen or not S.active then return end
-  if kind ~= "down" or button ~= 0 then return end
+  if button ~= 0 then return end
+  if kind == "up" then
+    S.erasing = false          -- 释放: 拖擦结束(棋盘内外任何位置)
+    return
+  end
+  if kind ~= "down" then return end
   S.lastMouseEv = os.clock()      -- #2104诊断打点: 事件到达证明capture链路活
+  S.erasing = false               -- 新按下: 拖擦状态重开
+  S.lastErCol, S.lastErRow = -1, -1
   local g = S.game
   if not g then return end
   local b = _G.BLOCKAI.Hud.boardRect()
@@ -520,14 +540,29 @@ local function mouseHandler(kind, x, y, button)
     return
   end
   if g.state ~= "playing" then return end
+  S.erasing = true                -- 按住: 进入拖擦(经过的方块全消除)
+  S.lastErCol, S.lastErRow = col, row
   clickCell(col, row)
 end
 
 -- 悬停跟踪(风主#9624): 鼠标处的方块轻微颤动 — move事件→格坐标→
 -- Board.setHover(varParams user.y, SSBO实时零重编译, VS注入消费)。
 -- 非capture订阅(宿主鼠标移动行为零影响); 仅playing态生效, 跨格才发RPC。
-local function hoverHandler(kind, x, y)
+-- #10830拖擦兜底: 本订阅另收棋盘外LMB down(棋盘内被mouseSub独占)+全部
+-- up(button 0) — 棋盘外按下扫入棋盘同样消除; move期间S.erasing逐格消除。
+local function hoverHandler(kind, x, y, button)
   if _G.__BLOCKAI_GEN ~= gen or not S.active then return end
+  if button == 0 then
+    if kind == "down" then
+      -- 棋盘外按下: 也进入拖擦(需求"左键按下时经过的方块都消除",
+      -- 无论起手点; 此处收到down=棋盘外, 棋盘内被mouseSub独占)
+      local g = S.game
+      S.erasing = g ~= nil and g.state == "playing"
+      S.lastErCol, S.lastErRow = -1, -1
+    elseif kind == "up" then
+      S.erasing = false   -- 双保险(mouseHandler的up若因热重载丢失在此兜底)
+    end
+  end
   if kind ~= "move" then return end
   local g = S.game
   if not g or g.state ~= "playing" then
@@ -543,6 +578,33 @@ local function hoverHandler(kind, x, y)
     return
   end
   Board.setHover(col, row)
+  -- 拖擦: LMB按住期间鼠标经过的格子全部消除(同格去重, 空格clickCell
+  -- 幂等no-op; 整行清空→行消除加分与单点点击同链路)
+  if S.erasing and (col ~= S.lastErCol or row ~= S.lastErRow) then
+    S.lastErCol, S.lastErRow = col, row
+    clickCell(col, row)
+  end
+end
+
+-- ── capture矩形(#10830) ──────────────────────────────────────────────────
+-- 棋盘屏幕矩形(宿主capture消费/匹配的作用域): 图未就绪→零矩形(全不命中,
+-- 就绪后tick同步修正); 有图→{x,y,w,h}(20行×10列, cellX/cellY各向异性)。
+local function boardCapRect()
+  local b = _G.BLOCKAI.Hud.boardRect()
+  if not b then return 0, 0, 0, 0 end
+  return b.x, b.y, b.cellX * 10, b.cellY * 20
+end
+
+-- 棋盘矩形跟随图片(平移/缩放/换图都会移动棋盘锚定矩形): 每tick比对,
+-- 变化才events.set_rect推送(订阅不变零重订阅; 宿主侧快照即时生效)。
+syncCapRect = function()
+  if not S.mouseSub then return end
+  local x, y, w, h = boardCapRect()
+  local r = S.capRect
+  if r and r.x == x and r.y == y and r.w == w and r.h == h then return end
+  if fcc.events.set_rect(S.mouseSub, x, y, w, h) then
+    S.capRect = { x = x, y = y, w = w, h = h }
+  end
 end
 
 -- 输入/事件订阅(幂等: 先off旧再on新; start与热重载代际交接共用)
@@ -554,12 +616,17 @@ local function subscribeInputs()
   if S.shaderEvSub then fcc.events.off(S.shaderEvSub) S.shaderEvSub = nil end
   if S.shaderEvSub2 then fcc.events.off(S.shaderEvSub2) S.shaderEvSub2 = nil end
   S.tickSub = fcc.events.on("tick", tickHandler, { hz = 60 })
-  -- 鼠标左键独占capture(风主#2077): 会话期间截获宿主LMB — 棋盘点击消除
-  -- + 双击不再切换全屏(宿主双击检测尊重capture消费); ImGui面板输入
-  -- 不经此链路不受影响
+  -- 鼠标左键独占capture(风主#2077+#10830): capture作用矩形=棋盘屏幕矩形 —
+  -- 仅棋盘内消费LMB(禁宿主拖图/双击全屏), 棋盘外LMB完全归还宿主(拖图/
+  -- 双击全屏照常); ImGui面板输入不经此链路不受影响。按住拖擦:
+  -- mouseHandler收棋盘内down+全部up, hoverHandler收move+棋盘外down兜底。
+  local rx, ry, rw, rh = boardCapRect()
   S.mouseSub = fcc.events.on("mouse", mouseHandler,
-                             { buttons = { 0 }, capture = true })
+                             { buttons = { 0 }, capture = true,
+                               rect = { x = rx, y = ry, w = rw, h = rh } })
+  S.capRect = { x = rx, y = ry, w = rw, h = rh }
   -- 悬停跟踪订阅(风主#9624, 非capture=宿主鼠标行为零影响): move→颤动
+  -- + #10830拖擦(move逐格消除/棋盘外down兜底/up双保险)
   S.hoverSub = fcc.events.on("mouse", hoverHandler, { move = true })
   -- shader就绪事件驱动(#2077): 编译完成/重载完成→尝试2D→3D升级(1s节流)
   local onShaderEv = function()
@@ -629,6 +696,8 @@ function _G.BLOCKAI.stop()
   S.game = nil
   S.auto = nil
   S.shaderPending = false
+  S.erasing = false         -- #10830: 订阅已摘, 拖擦态复位
+  S.capRect = nil
   if S.tickSub then fcc.events.off(S.tickSub) S.tickSub = nil end
   if S.mouseSub then fcc.events.off(S.mouseSub) S.mouseSub = nil end
   Board.killAll()
