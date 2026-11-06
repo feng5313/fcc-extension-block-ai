@@ -837,9 +837,13 @@ local CELL_TAG = 0x300000                -- tag段: 0x300000+c+r*256
 
 -- 20f条目构造(k为items浮点游标闭包由调用方管理)
 -- alpha: 出生透明度(spawn flags.w; -1=缺省1) — 半透出生消除先实心后修正闪现
+-- fx.yzw必须恒0(fcc#2515兼容): spawn的fx通道=粒子extra2, fcc查看器纯色
+-- 材质协议征用 extra2.w>0.5(此时extra2.z按RGB8打包整数解码) — 旧版把
+-- 无消费的方块RGB遗留数据塞进fx.yzw, fx.w(蓝分量≥0.5)误触发该协议 →
+-- vColor.rgb≈(1,0,0)/255≈纯黑+vAtlasColor=2 = 方块纯黑根因之一。
+-- fx.x保留(cellDiag*1.5=b1p钉住占格约定的威胁体长, bio网格消费)。
 local function emitItem(items, k, x, y, z, size, ty, variant, tag,
-                        pin, hue, light, fx1, rgb, alpha)
-  rgb = rgb or BLOCK_HEX[0]
+                        pin, hue, light, fx1, alpha)
   items[k + 1] = x; items[k + 2] = y; items[k + 3] = z
   items[k + 4] = size
   items[k + 5] = 0; items[k + 6] = 0; items[k + 7] = 0
@@ -848,8 +852,8 @@ local function emitItem(items, k, x, y, z, size, ty, variant, tag,
   items[k + 11] = -1; items[k + 12] = tag
   items[k + 13] = pin; items[k + 14] = hue
   items[k + 15] = light; items[k + 16] = alpha or -1
-  items[k + 17] = fx1; items[k + 18] = rgb[1]
-  items[k + 19] = rgb[2]; items[k + 20] = rgb[3]
+  items[k + 17] = fx1; items[k + 18] = 0
+  items[k + 19] = 0; items[k + 20] = 0
   return k + 20
 end
 
@@ -870,7 +874,7 @@ local function queueCells()
       local x, y = Board.cellWorld(c, r)
       k = emitItem(items, k, x, y, g.z, g.blockPx, Board.typeId, 0,
                     CELL_TAG + c + r * 256, 3, 0, 0,
-                    b.cellDiag * 1.5, BLOCK_HEX[0], 0.2)
+                    b.cellDiag * 1.5, 0.2)
       if k >= 50 * 20 then
         Board.cellQ[#Board.cellQ + 1] = items
         items, k = {}, 0
