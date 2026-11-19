@@ -506,39 +506,43 @@ end
 
 -- 面板位置平滑缓存(小于3px的取整抖动不更新, 防面板闪烁)
 Hud.lastPx = Hud.lastPx or { x = 300, y = 140 }
+-- 控件行几何校准缓存(#13665): 每帧由Hud.draw帧首双按钮法实测更新
+Hud.mBtnW = Hud.mBtnW or 27   -- ui_button("<")自然宽(FramePadding×2+字形宽)
+Hud.mIS = Hud.mIS or 8        -- ImGuiStyle.ItemSpacing.x
 
--- 控件行布局(风主钦定#9549): [<][控件定宽][>] 说明文字 —
--- 说明文字在右微调按钮之后; 左右按钮与控件边缘跨行严格对齐。
--- 绝对定位(ui_set_cursor_pos)+定宽(ui_set_next_item_width):
--- SameLine流式布局中combo/滑条默认占剩余全宽会挤飞同行按钮。
--- 滑条行withAdj=false: cb_ui_slider_float/int自带左右微调按钮
--- (风主#8530全局钦定), ctlRow再加一对=双重按钮(#9400), 故滑条行
--- 不加外层按钮, 控件仍占同一几何槽位(跨行对齐不变)。
-local CTL_DX = 30     -- "<"按钮螺距(自然宽~22+间隙)
-local CTL_W = 112     -- 控件(combo/滑条)统一宽度(对齐关键)
+-- 控件行布局(风主#13665重制): 帧首实测几何驱动, 消除字体/DPI硬编码依赖。
+-- 协议: combo行 [<]combo[>] 与 滑条行 uisl[<滑条>] **行总宽严格一致**、
+-- 左右两端严格对齐、label列严格同列(风主钦定: 滑条和下拉框宽度要一样)。
+--   combo行: [<](bx..bx+BW) combo(bx+BW+IS..+CTL_W) [>](+GAP..+BW) label(右端+IS)
+--   滑条行:  uisl整行宽度域 W=2·BW+IS+CTL_W+GAP (=combo行组合宽), label(bx+W+IS)
+-- uisl内建微调按钮(FrameHeight*0.7, cb_ui_slider_float固定)窄于ui_button自然宽,
+-- 滑条本体自动吸收差值 — 两端按钮组左右缘对齐, 主体等宽域。
+-- 绝对定位(ui_set_cursor_pos)+定宽(ui_set_next_item_width)防SameLine流式
+-- 布局中combo/滑条占剩余全宽挤飞同行按钮; BW/IS每帧校准(见Hud.draw帧首)。
+local CTL_W = 112     -- combo(下拉框)宽度
+local GAP   = 8       -- combo与右按钮间隙(固定语义)
 local function ctlRow(label, key, drawCtl, onAdj, withAdj)
   local bx, y = fcc.ui_get_cursor_pos()
+  local BW, IS = Hud.mBtnW or 27, Hud.mIS or 8
   local adj = 0
+  local ok, ch, val
   if withAdj ~= false then
     if fcc.ui_button("<##ar_" .. key) then adj = -1 end
-    fcc.ui_set_cursor_pos(bx + CTL_DX, y)
+    fcc.ui_set_cursor_pos(bx + BW + IS, y)
     if fcc.ui_set_next_item_width then fcc.ui_set_next_item_width(CTL_W) end
-  else
-    -- 滑条行: 占据[<]至[>]整行槽位(bx..bx+CTL_DX+CTL_W+30) — 内建微调
-    -- 按钮(~17px)与combo行外层按钮(~22px)两端对齐, 滑条本体加长补齐
-    fcc.ui_set_cursor_pos(bx, y)
-    if fcc.ui_set_next_item_width then
-      fcc.ui_set_next_item_width(CTL_DX + CTL_W + 30)
-    end
-  end
-  local ok, ch, val = pcall(drawCtl)
-  if withAdj ~= false then
-    fcc.ui_set_cursor_pos(bx + CTL_DX + CTL_W + 8, y)
+    ok, ch, val = pcall(drawCtl)
+    -- 控件区右端R(>按钮右缘)=滑条行右端共用锚
+    local R = bx + BW + IS + CTL_W + GAP + BW
+    fcc.ui_set_cursor_pos(R - BW, y)
     if fcc.ui_button(">##ar_" .. key) then adj = 1 end
-    fcc.ui_same_line()
+    fcc.ui_same_line()   -- label流式衔接= R+IS(与滑条行同列)
   else
-    -- 标签x与带按钮行严格对齐(按钮宽~22+间隙8)
-    fcc.ui_set_cursor_pos(bx + CTL_DX + CTL_W + 38, y)
+    -- 滑条行: 宽度域W=combo行组合总宽(两端对齐#13665); 内建按钮#8530自带,
+    -- 本体宽=CalcItemWidth()-2·FrameHeight·0.7-4自动适配
+    local W = BW * 2 + IS + CTL_W + GAP
+    if fcc.ui_set_next_item_width then fcc.ui_set_next_item_width(W) end
+    ok, ch, val = pcall(drawCtl)
+    fcc.ui_set_cursor_pos(bx + W + IS, y)   -- label与combo行同列
   end
   fcc.ui_text(label)
   if not ok then print("[block-ai] ctlRow " .. key .. ": " .. tostring(ch)) end
@@ -651,6 +655,25 @@ function Hud.draw(st)
                            0, 0, 0, 0.86, 2.5)
       fcc.ui_set_cursor_pos(8, 212)   -- 大字区预留(标题栏~26+大字~186)
       -- 下一块队列显示已去除(风主#2077; bag逻辑保留, AI自动消费)
+      -- 帧首几何校准(#13665): 双按钮游标差分实测按钮宽BW/ItemSpacing IS —
+      -- 布局零硬编码, 字体/DPI/样式变化自动跟随; 测完游标回退, 首个控件行
+      -- 同位重画覆盖, 零视觉痕迹(校准行宽≪内容宽, 不影响AutoResize)
+      do
+        local cbx, cby = fcc.ui_get_cursor_pos()
+        fcc.ui_button("<##blk_ca1")
+        fcc.ui_same_line()
+        local c1 = fcc.ui_get_cursor_pos()
+        fcc.ui_button("<##blk_ca2")
+        fcc.ui_same_line()
+        local c2 = fcc.ui_get_cursor_pos()
+        local bw = c2 - c1
+        if bw > 4 and bw < 200 then
+          Hud.mBtnW = bw
+          local is = c1 - cbx - bw
+          if is >= 0 and is <= 40 then Hud.mIS = is end
+        end
+        fcc.ui_set_cursor_pos(cbx, cby)   -- 回退, "渲染"行原位覆盖
+      end
       -- 控件行(渲染/材质/特效/音量×2/AI速度): 统一[<][定宽][>]说明
       local chA, curR = ctlRow(tr("渲染"), "rm",
         function()
