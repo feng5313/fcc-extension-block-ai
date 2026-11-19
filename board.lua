@@ -1,7 +1,7 @@
 -- ============================================================================
 -- board.lua — 棋盘3D层 = 静态格子=方块本体(#9472/#9445/#9455三令合一)
 --
--- 架构: 200个固定格子粒子(10×20)出生一次 — 位置/尺寸出生时定死,
+-- 架构: 231个固定格子粒子(11×21, 风主#2786各+1)出生一次 — 位置/尺寸出生时定死,
 -- 永不移动永不死亡(与鱼同构的渲染流程); 每tick从board数组(+active/
 -- ghost)计算每格期望态(variant/hue/light/pin) → set_state批量窄写
 -- 差异格。零kill零spawn零move: 消行/锁块/材质切换/幽灵/下落全部=
@@ -191,15 +191,17 @@ local function matTexture(matId)
         if e2 > 0.86 then g = 255 end
         if math.abs(e2 - 0.62) < 0.045 then g = 128 end
       end
-      if matId == 5 then          -- 棋盘背景格: 10×20格线+透明底
+      if matId == 5 then          -- 棋盘背景格: 11×21格线+透明底(#2786)
+        local GW = _G.BLOCKAI.Game.W
+        local GH = _G.BLOCKAI.Game.H
         g, a = 235, 0
-        local gx = (x - 1) / W * 10
-        local gy = (y - 1) / W * 20
+        local gx = (x - 1) / W * GW
+        local gy = (y - 1) / W * GH
         local fx = math.abs(gx - math.floor(gx + 0.5))
         local fy = math.abs(gy - math.floor(gy + 0.5))
         local lw = W / 160        -- 线宽~0.8px
-        if fx * 10 < lw or fy * 20 < lw or gx < 0.5 or gx > 9.5
-           or gy < 0.5 or gy > 19.5 then
+        if fx * GW < lw or fy * GH < lw or gx < 0.5 or gx > GW - 0.5
+           or gy < 0.5 or gy > GH - 0.5 then
           a = 255                 -- 格线+外框
         end
         if math.floor(gx) % 2 == math.floor(gy) % 2 then
@@ -780,27 +782,30 @@ function Board.refreshGeometry()
         + Board.bioCache.cellZ ^ 2)
   end
   local bio = Board.bioCache
-  -- 位置格宽=图片内容高/20(与锚点归一化同源): 缩放时锚点按图片矩形
+  local Game = _G.BLOCKAI.Game
+  local GW, GH = Game.W, Game.H   -- 11×21(#2786): 渲染几何随逻辑单一事实源
+  -- 位置格宽=图片内容高/GH(与锚点归一化同源): 缩放时锚点按图片矩形
   -- 精确缩放, 旧格与新格零错位(风主钦定#9511: 方块发射后固定不变,
   -- 跟随图片自然缩放, 不rebuild不重摆)。
   -- blockPx与位置格宽解耦=宇宙常数(见visGeo注释): 所有方块(无论何时
   -- 出生)屏上尺寸恒等且∝图片高度, 零重算; 旧方案blockPx含出生期
   -- rtH比值 → 缩放后新旧块尺寸互异=算不对大小根因。
-  local cell = imgRT[4] / 20
-  local bhPx = cell * 20
+  local cell = imgRT[4] / GH
+  local bhPx = cell * GH
   -- 居中世界系: 棋盘水平居中(x中心=0), 纵向=图片高度居中(yTop=图片顶)
   -- (VS投影 clip=pos/(rt/2), 出生y必须居中 — 底上制坐标会分裂两截)
   local yTop = bhPx / 2
   local bz = math.min(bio.dim[3] - 1, math.floor(bio.dim[3] * 0.86))
   Board.visGeo = {
-    x0 = -cell * 5, yTop = yTop,
-    cell = cell, bw = 10, bh = 20,
-    boardW = cell * 10, boardH = bhPx,
+    x0 = -cell * GW * 0.5, yTop = yTop,
+    cell = cell, bw = GW, bh = GH,
+    boardW = cell * GW, boardH = bhPx,
     -- blockPx=半边长(mesh size语义)。出生定死(风主铁令: 只发射一次,
-    -- 永不重算): blockPx=0.0238×imgRect.h(间隙=方块1/20: drawn/cell=
-    -- 20/21≈0.952), 换图rebuild时随新图取值。缩放跟随由CS增量等比承担
+    -- 永不重算): blockPx∝图片高度, 间隙比例恒定(方块边/格宽=2×0.0227×21
+    -- ≈0.953, 与旧10×20的0.952同观感), 换图rebuild时随新图取值。缩放跟随
+    -- 由CS增量等比承担
     -- (b1p: size×=√(vs×vsY)与b4水花同式) — 无锚无每帧重算, 天然跟随图片。
-    blockPx = 0.0238 * imgRT[4],
+    blockPx = 0.0227 * imgRT[4],
     z = bio.mn[3] + (bz + 0.5) * bio.cellZ,
     imgRect = imgRT,
     -- geoKey=源图原始像素(仅换图触发rebuild): 缩放只变显示尺寸,
@@ -824,7 +829,7 @@ end
 
 
 -- ══ 静态格子调和(#9472/#9445/#9455/#9480四令合一): 棋盘格=方块本体 ═══
--- 200个固定格子粒子出生一次(位置/尺寸定死, 永不移动永不死亡=鱼管线);
+-- 全部固定格子粒子出生一次(位置/尺寸定死, 永不移动永不死亡=鱼管线);
 -- 每tick board数组+active/ghost → 每格期望态 → set_state批量窄写差异格
 -- — 常规tick零kill零spawn零move。全格同一方块材质(#9480): 只用色相/
 -- 亮度/透明度区分 — 空=黑色a0.2 锁定=块色相a1(p1阻挡) 下落=块色相
@@ -857,7 +862,7 @@ local function emitItem(items, k, x, y, z, size, ty, variant, tag,
   return k + 20
 end
 
--- 格子出生入队: 200格÷50格/批(4帧铺完, 防大批出生峰值); 出生即休眠空格
+-- 格子出生入队: 全部格(bw×bh)÷50格/批铺完, 防大批出生峰值; 出生即休眠空格
 -- 出生顺序=绘制序(风主钦定: 先下后上, 先左后右 — 倾角下上/右近, 近后
 -- 画覆盖远)。机制: cs_mesh_sort排序键按16px深度带粗化, 全格z恒等
 -- (g.z)恒同band → 同band按槽位id决胜(出生分配序) → 绘制序≡出生序;
@@ -869,13 +874,13 @@ local function queueCells()
   if Board.cellsQueued then return end
   local g, b = Board.visGeo, Board.bio
   local items, k = {}, 0
-  for r = 19, 0, -1 do
-    for c = 0, 9 do
+  for r = g.bh - 1, 0, -1 do
+    for c = 0, g.bw - 1 do
       local x, y = Board.cellWorld(c, r)
       k = emitItem(items, k, x, y, g.z, g.blockPx, Board.typeId, 0,
                     CELL_TAG + c + r * 256, 3, 0, 0,
                     b.cellDiag * 1.5, 0.2)
-      if k >= 50 * 20 then
+      if k >= 50 * g.bh then
         Board.cellQ[#Board.cellQ + 1] = items
         items, k = {}, 0
       end
@@ -885,7 +890,7 @@ local function queueCells()
   Board.cellsQueued = true
 end
 
--- 期望态纯函数: rows数组+active/ghost叠加 → 200格{v,h,l,p,a}
+-- 期望态纯函数: rows数组+active/ghost叠加 → 全格(bw×bh){v,h,l,p,a}
 -- 风主钦定(#9480): 全格同一方块材质(variant=matId), 只用色相/亮度/
 -- 透明度区分格态 — 空格=淡蓝低alpha棋盘底, 幽灵=块色相半透, 锁定/
 -- 下落=块色相不透明; 材质切换=全板repaint同一variant。
@@ -900,19 +905,20 @@ Board.MAT_HASH = MAT_HASH
 
 local function buildWant(game, rows, matId, visible)
   local want = {}
+  local GW = #rows[1] or game.W   -- 尺寸随快照(单一事实源game.W/H)
   if visible then
     -- rm作用域=整个buildWant(锁定/下落/幽灵三循环共用): 声明在锁定循环
     -- 内曾致下落循环(784)取全局nil → reconcile每tick抛错中止=playing
     -- 期间方块永不显示(暂停/结束才显示)的根因
     local rm = (matId == 4) and -1 or matId   -- -1=per组随机
-    for r = 0, 19 do
+    for r = 0, #rows - 1 do
       local br = rows[r + 1]
-      for c = 0, 9 do
+      for c = 0, #br - 1 do
         local t = br[c + 1]
         if t then
           local ty = t % 8                    -- 解包type(低3位)
           local v = (rm >= 0) and rm or MAT_HASH(math.floor(t / 8))
-          want[c + 1 + r * 10] = { v = v, h = HUES[ty] or HUES[0],
+          want[c + 1 + r * GW] = { v = v, h = HUES[ty] or HUES[0],
                                     l = BLOCK_L[ty] or 0.62, p = 1, a = 1 }
         end
       end
@@ -923,14 +929,14 @@ local function buildWant(game, rows, matId, visible)
       local lA = (BLOCK_L[a.type] or 0.62) + 0.07
       local vA = (rm >= 0) and rm or MAT_HASH(a.seq or 0)
       for _, cc in ipairs(game:activeCells()) do
-        want[cc[1] + 1 + cc[2] * 10] = { v = vA, h = hueA, l = lA,
+        want[cc[1] + 1 + cc[2] * GW] = { v = vA, h = hueA, l = lA,
                                           p = 2, a = 1 }
       end
       local gy = game:ghostY()
       if gy and gy ~= a.y then
         for _, cc in ipairs(game:activeCells(
             { type = a.type, rot = a.rot, x = a.x, y = gy })) do
-          local i = cc[1] + 1 + cc[2] * 10
+          local i = cc[1] + 1 + cc[2] * GW
           if not want[i] then
             local gv = (rm >= 0) and rm or 0   -- 幽灵variant(随机材质用0)
             want[i] = { v = gv, h = hueA, l = 0.70, p = 3, a = 0.05 }
@@ -981,15 +987,16 @@ function Board.reconcile(game)
     local rows = game:boardSnapshot()
     if not rows then return false end
     local want = buildWant(game, rows, m, Board.visible3d)
+    local GW_IDX = #rows[1]   -- want数组步长(与buildWant同源)
     -- 空格variant(m=4时用0, 其余=m) — 发送与账本共用, 谨防两处不同源
     local v0 = (m == 4) and 0 or m
     local items = {}
     local k = 0
     local dirty = {}
     local nd = 0
-    for r = 0, 19 do
-      for c = 0, 9 do
-        local i = c + 1 + r * 10
+    for r = 0, #rows - 1 do
+      for c = 0, #rows[r + 1] - 1 do
+        local i = c + 1 + r * GW_IDX
         local w = want[i]
         -- 空格: 黑色×0.05(近全透, 风主#2077: 明亮海面/天空背景下棋盘
         -- 退到几乎不可见 — 对齐r40_full_now认可观感); 随机材质(4)空格用
@@ -1166,7 +1173,7 @@ function Board.flushFx()
   end
 end
 
--- ── 格子换血: 几何变化(RT/网格/换图)后重建200格 ─────────────────────────
+-- ── 格子换血: 几何变化(RT/网格/换图)后重建全部格 ────────────────────────
 -- 格子位置/尺寸出生定死 → 几何变化必须换血(游戏board数据无损, 4帧重铺);
 -- 只杀块type(fx自生自灭, 槽位type不受影响), 账本复位后reconcile自动
 -- 重queue新几何出生+按board数组repaint全量恢复。

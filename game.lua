@@ -6,12 +6,12 @@
 --   副作用通过 events 队列输出(由 main.lua 消费: 音效/粒子/xgl重建)。
 --   input = {left,right,rot_cw,rot_ccw,soft,hard,pause,reset,start} (bool)
 --
--- 与原版逐条对齐:
---   10×20棋盘; SRS数据表+踢±1; 7-bag(bag<4补7洗牌, 从back取);
---   计分100/300/500/1000; 升级门槛增量min(5*2^n,50), 每级-5帧(45→min15);
---   软降立即+1行(不加分); 硬降直落; ghost; 旋转音效仅"原地转成功"时播放;
---   状态机 title/playing/paused/gameover; reset只清棋盘不清状态;
---   自然落地gameover无音效, 硬降gameover有音效(原版行为)。
+-- 与原版差异(风主#2786钦定: 规避版权):
+--   棋盘11×21(原版10×20, 行/列各+1); SRS数据表+踢±1; 7-bag(bag<4补7洗牌,
+--   从back取); 计分100/300/500/1000; 升级门槛增量min(5*2^n,50), 每级-5帧
+--   (45→min15); 软降立即+1行(不加分); 硬降直落; ghost; 旋转音效仅"原地转
+--   成功"时播放; 状态机 title/playing/paused/gameover; reset只清棋盘不清
+--   状态; 自然落地gameover无音效, 硬降gameover有音效(原版行为)。
 -- ============================================================================
 -- 模块热重载协议: 原地刷新(保表身保数据, 重定义函数) — 宿主hot-reload重跑
 -- 本文件时新逻辑立即生效, typeId/boardGen等数据不丢。
@@ -23,7 +23,8 @@ if not Game then
   _G.BLOCKAI.Game = Game
 end
 
-local W, H = 10, 20
+local W, H = 11, 21   -- 棋盘列×行(风主#2786: 各+1区别原版10×20规避版权)
+Game.W, Game.H = W, H -- 单一事实源: board/hud/main渲染与命中检测取此值
 local INIT_FRAMES = 45
 
 -- 4旋转×4块 相对坐标 (SRS数据, 原版tetromino_data同表)

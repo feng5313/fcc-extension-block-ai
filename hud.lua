@@ -243,20 +243,20 @@ local RMS = { "立体\0平面\0" }
 -- 棋盘屏幕矩形(与board.visGeo同构: 20格对齐图片高, 10格宽居中)
 -- DX11 ImageArea: 粒子RT宽/高独立量化(宽256px/高64px块+滞回) → RT纵横比≠
 -- 图片纵横比(1920×1080图→RT2048×1088=5.6%失真), overlay各向异性拉伸RT铺满
--- 图片矩形 → 棋盘(RT域, cell_rt=imgRT.h/20)屏幕水平格宽=cellY·(iw/imgRT.w)
--- ≠ih/20; 各向同性假设让边缘列点击映射错位近一格(左缘死区/右列点中邻列)。
--- 水平格宽按RT真值修正(GL版粒子画窗口FBO 1:1无此问题; visGeo.imgRect=
--- 最终FBO量化后真值, 与3D方块锚点/物理同源); cellY恒=ih/20(垂直满铺精确)
+-- 图片矩形 → 棋盘(RT域, cell_rt=imgRT.h/Game.H)屏幕水平格宽=cellY·(iw/imgRT.w)
+-- (图片像素≠RT像素, iw/ih=fcc面板显示尺寸; RT系从viewer_get_image_rect取
+-- 最终FBO量化后真值, 与3D方块锚点/物理同源); cellY恒=ih/Game.H(垂直满铺精确)
 local function boardRect()
   local okR, ix, iy, iw, ih = pcall(fcc.image_get_rect)
   if not okR or not iw or iw < 100 or ih < 100 then return nil end
-  local cellY = ih / 20
+  local GW, GH = _G.BLOCKAI.Game.W, _G.BLOCKAI.Game.H
+  local cellY = ih / GH
   local cellX = cellY
   local vg = _G.BLOCKAI.Board and _G.BLOCKAI.Board.visGeo
   if vg and vg.imgRect and vg.imgRect[3] > 1 and vg.imgRect[4] > 1 then
-    cellX = (vg.imgRect[4] / 20) * (iw / vg.imgRect[3])
+    cellX = (vg.imgRect[4] / GH) * (iw / vg.imgRect[3])
   end
-  return { x = ix + (iw - cellX * 10) / 2, y = iy,
+  return { x = ix + (iw - cellX * GW) / 2, y = iy,
            cellX = cellX, cellY = cellY, cell = cellY }
 end
 Hud.boardRect = boardRect   -- 暴露: main.lua鼠标点击命中检测用
@@ -336,9 +336,9 @@ local function drawBoardLayer(game, st)
   local tNow = st and st.now or 0
   local pulse = 1.0 + (hc >= 0 and 0.015 * math.sin(tNow * 31.4159) or 0.0)
   -- 落定块(随机材质4=按组: 同块4格同材质, Board.MAT_HASH同源)
-  for r = 0, 19 do
+  for r = 0, #rows - 1 do
     local row = rows[r + 1]
-    for c = 0, 9 do
+    for c = 0, #row - 1 do
       local t = row[c + 1]
       if t then
         local pr, pg, pb = Board.pieceColor(t)
@@ -362,7 +362,7 @@ local function drawBoardLayer(game, st)
     local pr, pg, pb = Board.pieceColor(a.type)
     local mA = (mat == 4) and Board.MAT_HASH(a.seq or 0) or mat
     for _, c in ipairs(game:activeCells()) do
-      if c[1] >= 0 and c[1] < 10 and c[2] >= 0 and c[2] < 20 then
+      if c[1] >= 0 and c[1] < game.W and c[2] >= 0 and c[2] < game.H then
         local x, y = b.x + c[1] * cellX, b.y + c[2] * cellY
         local cw, ch = cellX, cellY
         if c[1] == hc and c[2] == hr then
@@ -580,8 +580,8 @@ function Hud.draw(st)
       local tw = 0
       local okT, wT = pcall(fcc.calc_text_width, winTxt, sz)
       if okT and wT then tw = wT end
-      local tx = b2.x + b2.cellX * 5 - tw * 0.5
-      local ty = b2.y + b2.cellY * 10 - sz * 0.6
+      local tx = b2.x + b2.cellX * (_G.BLOCKAI.Game.W * 0.5) - tw * 0.5
+      local ty = b2.y + b2.cellY * (_G.BLOCKAI.Game.H * 0.5) - sz * 0.6
       fcc.draw_text_shadow(tx, ty, winTxt, sz, wr, wg, wb, 1.0,
                            0, 0, 0, 0.95, 3)
     end

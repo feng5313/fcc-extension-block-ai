@@ -533,7 +533,7 @@ local function mouseHandler(kind, x, y, button)
   if not b then return end
   local col = math.floor((x - b.x) / b.cellX)
   local row = math.floor((y - b.y) / b.cellY)
-  if col < 0 or col > 9 or row < 0 or row > 19 then return end
+  if col < 0 or col >= Game.W or row < 0 or row >= Game.H then return end
   -- 游戏结束: 点击棋盘区域=自动重新开始(风主#9648, 无需找面板按钮)
   if g.state == "gameover" then
     S.requestRestart = true
@@ -573,7 +573,7 @@ local function hoverHandler(kind, x, y, button)
   if not b then return end
   local col = math.floor((x - b.x) / b.cellX)
   local row = math.floor((y - b.y) / b.cellY)
-  if col < 0 or col > 9 or row < 0 or row > 19 then
+  if col < 0 or col >= Game.W or row < 0 or row >= Game.H then
     if Board.hoverTag1 ~= 0 then Board.setHover(-1, -1) end
     return
   end
@@ -588,11 +588,11 @@ end
 
 -- ── capture矩形(#10830) ──────────────────────────────────────────────────
 -- 棋盘屏幕矩形(宿主capture消费/匹配的作用域): 图未就绪→零矩形(全不命中,
--- 就绪后tick同步修正); 有图→{x,y,w,h}(20行×10列, cellX/cellY各向异性)。
+-- 就绪后tick同步修正); 有图→{x,y,w,h}(Game.H行×Game.W列, cellX/cellY各向异性)。
 local function boardCapRect()
   local b = _G.BLOCKAI.Hud.boardRect()
   if not b then return 0, 0, 0, 0 end
-  return b.x, b.y, b.cellX * 10, b.cellY * 20
+  return b.x, b.y, b.cellX * Game.W, b.cellY * Game.H
 end
 
 -- 棋盘矩形跟随图片(平移/缩放/换图都会移动棋盘锚定矩形): 每tick比对,
@@ -790,8 +790,9 @@ local function rpcHandler(op, args)
     -- 经RPC即可扮演"鼠标玩家"对抗AI)
     local c = math.floor(tonumber(args.col) or -1)
     local r = math.floor(tonumber(args.row) or -1)
-    if c < 0 or c > 9 or r < 0 or r > 19 then
-      return { ok = false, error = "col/row out of range (0-9/0-19)" }
+    if c < 0 or c >= Game.W or r < 0 or r >= Game.H then
+      return { ok = false, error = string.format(
+          "col/row out of range (0-%d/0-%d)", Game.W - 1, Game.H - 1) }
     end
     return clickCell(c, r)
   elseif op == "reseed_material" then
@@ -937,7 +938,7 @@ end
 -- 前瞻: 当前块全候选可达过滤取top8 → 模拟盖章 → next1贪心最优
 -- 的落定板分 → 同深度终局板分比较取全局最优落点。
 local SH_T = _G.BLOCKAI.Game.SHAPES
-local BW, BH = 10, 20
+local BW, BH = Game.W, Game.H   -- AI评估棋盘副本尺寸(单一事实源, #2786=11×21)
 
 -- 盖章指定placement并返回消行后的grid + Dellacherie特征分
 -- (cells/x/y=placement; 返回nil=放不进)
@@ -1097,7 +1098,7 @@ end
 
 -- 水平+下落可达列集合(标准方块游戏可达性近似): 从(x0,y0)出发
 -- 每步{左,右,下}BFS, 返回{[可着陆锚x]=着陆y} — 规划只选可达落点。
--- 锚x范围[-3,12]按块cells实际占用列判界(overlap含越界检查),
+-- 锚x范围[-3,BW+2]按块cells实际占用列判界(overlap含越界检查),
 -- I竖直等锚x=-2(实际列0)是合法贴墙落点, 不能按锚≥0截断。
 local function reachableCols(g, ty, rot, x0, y0)
   local ov = Game._overlap
@@ -1109,7 +1110,7 @@ local function reachableCols(g, ty, rot, x0, y0)
     local x, y = cur[1], cur[2]
     for _, nx in ipairs({ x - 1, x + 1 }) do
       local key = nx * 32 + y
-      if nx >= -3 and nx <= 12 and not seen[key]
+      if nx >= -3 and nx <= BW + 2 and not seen[key]
          and not ov(g, ty, rot, nx, y) then
         seen[key] = true
         stack[#stack + 1] = { nx, y }
