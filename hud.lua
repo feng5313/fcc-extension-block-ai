@@ -506,48 +506,50 @@ end
 
 -- 面板位置平滑缓存(小于3px的取整抖动不更新, 防面板闪烁)
 Hud.lastPx = Hud.lastPx or { x = 300, y = 140 }
--- 控件行几何校准缓存(#13665): 每帧由Hud.draw帧首双按钮法实测更新
-Hud.mBtnW = Hud.mBtnW or 27   -- ui_button("<")自然宽(FramePadding×2+字形宽)
-Hud.mIS = Hud.mIS or 8        -- ImGuiStyle.ItemSpacing.x
 
--- 控件行布局(风主#13665重制): 帧首实测几何驱动, 消除字体/DPI硬编码依赖。
--- 协议: combo行 [<]combo[>] 与 滑条行 uisl[<滑条>] **行总宽严格一致**、
--- 左右两端严格对齐、label列严格同列(风主钦定: 滑条和下拉框宽度要一样)。
---   combo行: [<](bx..bx+BW) combo(bx+BW+IS..+CTL_W) [>](+GAP..+BW) label(右端+IS)
---   滑条行:  uisl整行宽度域 W=2·BW+IS+CTL_W+GAP (=combo行组合宽), label(bx+W+IS)
--- uisl内建微调按钮(FrameHeight*0.7, cb_ui_slider_float固定)窄于ui_button自然宽,
--- 滑条本体自动吸收差值 — 两端按钮组左右缘对齐, 主体等宽域。
--- 绝对定位(ui_set_cursor_pos)+定宽(ui_set_next_item_width)防SameLine流式
--- 布局中combo/滑条占剩余全宽挤飞同行按钮; BW/IS每帧校准(见Hud.draw帧首)。
-local CTL_W = 112     -- combo(下拉框)宽度
-local GAP   = 8       -- combo与右按钮间隙(固定语义)
+-- 控件行布局(风主#13665终版): 与fcc宿主uisl滑条(settings_ui同款形态)严格
+-- 同构对齐 — 帧首ui_calc_text_size实测字形宽/字号, 推出uisl内建微调按钮宽
+-- BWu=FrameHeight*0.7(FontSize+2*FramePadding.y; ImGui默认FP=(4,3),
+-- imgui.cpp:1513, fcc全局样式未改已核), combo行外层< >按钮push
+-- FramePadding.x=(BWu-字形宽)/2 → 按钮宽精确=BWu → 两行按钮列/控件列/
+-- 标签列像素级对齐, 行总宽同=2*BWu+CTL_W+4(风主钦定宽度一致)。
+-- 滑条行标签由uisl labelRight原生画在>按钮右侧(#2679/settings_ui惯例)。
+-- 组内间隙=2(uisl SameLine(0,2)同款); 绝对定位+定宽防流式布局挤飞控件。
+local CTL_W   = 112    -- combo/滑条宽度域共用(两行控件列同宽)
+local FPY_DEF = 3      -- ImGui默认FramePadding.y
+local mBWu, mFpX = 15, 3   -- 帧校准值(Hud.draw每帧更新, 见下)
 local function ctlRow(label, key, drawCtl, onAdj, withAdj)
   local bx, y = fcc.ui_get_cursor_pos()
-  local BW, IS = Hud.mBtnW or 27, Hud.mIS or 8
-  local adj = 0
-  local ok, ch, val
   if withAdj ~= false then
-    if fcc.ui_button("<##ar_" .. key) then adj = -1 end
-    fcc.ui_set_cursor_pos(bx + BW + IS, y)
+    if fcc.ui_push_style_var_vec2 then
+      fcc.ui_push_style_var_vec2(11, mFpX, FPY_DEF)   -- 11=FramePadding
+    end
+    local adj = fcc.ui_button("<##ar_" .. key) and -1 or 0
+    fcc.ui_pop_style_var()
+    fcc.ui_set_cursor_pos(bx + mBWu + 2, y)
     if fcc.ui_set_next_item_width then fcc.ui_set_next_item_width(CTL_W) end
-    ok, ch, val = pcall(drawCtl)
-    -- 控件区右端R(>按钮右缘)=滑条行右端共用锚
-    local R = bx + BW + IS + CTL_W + GAP + BW
-    fcc.ui_set_cursor_pos(R - BW, y)
+    local ok, ch, val = pcall(drawCtl)
+    fcc.ui_set_cursor_pos(bx + mBWu + CTL_W + 4, y)
+    if fcc.ui_push_style_var_vec2 then
+      fcc.ui_push_style_var_vec2(11, mFpX, FPY_DEF)
+    end
     if fcc.ui_button(">##ar_" .. key) then adj = 1 end
-    fcc.ui_same_line()   -- label流式衔接= R+IS(与滑条行同列)
+    fcc.ui_pop_style_var()
+    fcc.ui_same_line()   -- label=`>`右+IS(与uisl行标签同列同y)
+    fcc.ui_text(label)
+    if not ok then print("[block-ai] ctlRow " .. key .. ": " .. tostring(ch)) end
+    if adj ~= 0 and onAdj then onAdj(adj) end
+    return ch == true, val
   else
-    -- 滑条行: 宽度域W=combo行组合总宽(两端对齐#13665); 内建按钮#8530自带,
-    -- 本体宽=CalcItemWidth()-2·FrameHeight·0.7-4自动适配
-    local W = BW * 2 + IS + CTL_W + GAP
-    if fcc.ui_set_next_item_width then fcc.ui_set_next_item_width(W) end
-    ok, ch, val = pcall(drawCtl)
-    fcc.ui_set_cursor_pos(bx + W + IS, y)   -- label与combo行同列
+    -- 滑条行: uisl整行宽度域=combo行组合宽(2*BWu+CTL_W+4) → 两行严格
+    -- 等宽同列; 标签由uisl labelRight原生画在>右侧, ctlRow不代画
+    if fcc.ui_set_next_item_width then
+      fcc.ui_set_next_item_width(mBWu * 2 + CTL_W + 4)
+    end
+    local ok, ch, val = pcall(drawCtl)
+    if not ok then print("[block-ai] ctlRow " .. key .. ": " .. tostring(ch)) end
+    return ch == true, val
   end
-  fcc.ui_text(label)
-  if not ok then print("[block-ai] ctlRow " .. key .. ": " .. tostring(ch)) end
-  if adj ~= 0 and onAdj then onAdj(adj) end
-  return ch == true, val
 end
 
 -- st = _G.BLOCKAI.state
@@ -655,24 +657,15 @@ function Hud.draw(st)
                            0, 0, 0, 0.86, 2.5)
       fcc.ui_set_cursor_pos(8, 212)   -- 大字区预留(标题栏~26+大字~186)
       -- 下一块队列显示已去除(风主#2077; bag逻辑保留, AI自动消费)
-      -- 帧首几何校准(#13665): 双按钮游标差分实测按钮宽BW/ItemSpacing IS —
-      -- 布局零硬编码, 字体/DPI/样式变化自动跟随; 测完游标回退, 首个控件行
-      -- 同位重画覆盖, 零视觉痕迹(校准行宽≪内容宽, 不影响AutoResize)
+      -- 帧首几何校准(#13665): 实测"<"字形宽/字号 → uisl内建按钮宽BWu与
+      -- 外层按钮FramePadding.x补偿 → 两行按钮像素级同宽; 全实测驱动,
+      -- 字体/DPI自适应(仅FP.y=ImGui默认3为常数, fcc全局未改已核)
       do
-        local cbx, cby = fcc.ui_get_cursor_pos()
-        fcc.ui_button("<##blk_ca1")
-        fcc.ui_same_line()
-        local c1 = fcc.ui_get_cursor_pos()
-        fcc.ui_button("<##blk_ca2")
-        fcc.ui_same_line()
-        local c2 = fcc.ui_get_cursor_pos()
-        local bw = c2 - c1
-        if bw > 4 and bw < 200 then
-          Hud.mBtnW = bw
-          local is = c1 - cbx - bw
-          if is >= 0 and is <= 40 then Hud.mIS = is end
+        local tw, fsz = fcc.ui_calc_text_size("<")
+        if tw and tw > 1 and fsz and fsz > 4 then
+          mBWu = (fsz + FPY_DEF * 2) * 0.7        -- uisl按钮宽=FrameHeight*0.7
+          mFpX = math.max(0, (mBWu - tw) * 0.5)   -- 外层按钮补pad至同宽
         end
-        fcc.ui_set_cursor_pos(cbx, cby)   -- 回退, "渲染"行原位覆盖
       end
       -- 控件行(渲染/材质/特效/音量×2/AI速度): 统一[<][定宽][>]说明
       local chA, curR = ctlRow(tr("渲染"), "rm",
@@ -700,7 +693,7 @@ function Hud.draw(st)
       -- volSfx实时生效, 零RPC联动; 音乐滑条(volBgm)独立控制BGM
       local chV, vV = ctlRow(tr("音效"), "volm",
         function()
-          local v, c = fcc.ui_slider_float("##tet_volm",
+          local v, c = fcc.ui_slider_float(tr("音效") .. "##tet_volm",
                                            st.volSfx, 0.0, 1.0)
           return c, v
         end,
@@ -713,7 +706,8 @@ function Hud.draw(st)
       if type(st.volBgm) ~= "number" then st.volBgm = 0.0 end
       local chB, vB = ctlRow(tr("音乐"), "volb",
         function()
-          local v, c = fcc.ui_slider_float("##tet_volb", st.volBgm, 0.0, 1.0)
+          local v, c = fcc.ui_slider_float(tr("音乐") .. "##tet_volb",
+                                           st.volBgm, 0.0, 1.0)
           return c, v
         end,
         function(d)
@@ -742,7 +736,7 @@ function Hud.draw(st)
           math.floor(st.autoClear + 0.5)))
       local chC, vC = ctlRow(tr("AI速度"), "ac",
         function()
-          local v, c = fcc.ui_slider_int("##tet_ac",
+          local v, c = fcc.ui_slider_int(tr("AI速度") .. "##tet_ac",
                                          math.floor(st.autoClear + 0.5), 1, 10)
           return c, v
         end,
